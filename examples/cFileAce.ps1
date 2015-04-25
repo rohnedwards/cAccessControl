@@ -1,12 +1,13 @@
 configuration TestFileAceResource {
     Import-DscResource -Module cAccessControl
 
+    $FolderPath = "c:\ps_dsc_test"
     File DscTestFolder {
-        DestinationPath = "c:\ps_dsc_test"
+        DestinationPath = $FolderPath
         Type = "Directory"
     }
     cFileAce DscTestFolderAce1 {
-        Path = "c:\powershell"
+        Path = $FolderPath
         AceType = "Allow"
         Principal = "Everyone"
         FileSystemRights = "Modify"

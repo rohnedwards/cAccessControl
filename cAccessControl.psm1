@@ -29,6 +29,8 @@ function ConvertPrincipalToSid {
     )
 
     process {
+        Write-Verbose "  Translating principal '$Principal' to SID..."
+
 	    # Is principal already a SID?
 	    $SID = $Principal -as [System.Security.Principal.SecurityIdentifier]
 	    if ($SID -eq $null) {
@@ -40,6 +42,7 @@ function ConvertPrincipalToSid {
 		    }
 	    }
 
+        Write-Verbose "    Translated to '$SID'"
 	    return $SID
     }
 }
@@ -56,6 +59,7 @@ function ConvertAceFlagsToAppliesTo {
     process {
         [AppliesTo] $AppliesTo = 0
 
+        Write-Verbose "  Converting InheritanceFlags '$InheritanceFlags' and PropagationFlags '$PropagationFlags' to AppliesTo..."
         if (-not ($PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly)) {
             $AppliesTo = $AppliesTo -bor [AppliesTo]::Object
         }
@@ -76,6 +80,7 @@ function ConvertAceFlagsToAppliesTo {
             Write-Error -Category InvalidData "Invalid flags"
         }
         else {
+            Write-Verbose "    Converted to '$AppliesTo'"
             $AppliesTo
         }
     }
@@ -134,6 +139,10 @@ function GetAces {
         [switch] $Specific
     )
 
+    Write-Verbose "  Looking up ACEs that meet the following conditions:"
+    $PSBoundParameters.GetEnumerator() | ForEach-Object {
+        Write-Verbose ("    {0} = {1}" -f $_.Key, $_.Value)
+    }
     $SID = $Principal | ConvertPrincipalToSid -ErrorAction Stop
 
     $GetAclParams = @{
@@ -164,24 +173,40 @@ function GetAces {
     ) | ForEach-Object {
         
         # Test SID
-        if ($_.IdentityReference -ne $SID) { return }
+        if ($_.IdentityReference -ne $SID) { 
+            Write-Verbose ("    IdentityReference doesn't match (Currently [{0}]; Should be [{1}]" -f $_.IdentityReference, $SID)
+            return 
+        }
 
         # Test AppliesTo
-        if (-not ($_ | ConvertAceFlagsToAppliesTo | TestBandOrEquals $AppliesTo -Specific:$Specific)) { return }
+        if (-not ($_ | ConvertAceFlagsToAppliesTo | TestBandOrEquals $AppliesTo -Specific:$Specific)) { 
+            Write-Verbose ("    AppliesTo doesn't match (Currently [{0}]; Should be [{0}]" -f ($_ | ConvertAceFlagsToAppliesTo), $AppliesTo)
+            return 
+        }
 
         # Test AccessMask
         $CurrentAccessMask = $_.GetType().InvokeMember("AccessMask", "GetProperty, NonPublic, Instance", $null, $_, $null)
-        if (-not ($CurrentAccessMask | TestBandOrEquals $AccessMask -Specific:$Specific)) { return }
+        if (-not ($CurrentAccessMask | TestBandOrEquals $AccessMask -Specific:$Specific)) { 
+            Write-Verbose "    AccessMask doesn't match (Currently [$CurrentAccessMask]; Should be [$AccessMask])"
+            return 
+        }
 
         # Test AccessControlType/AuditFlags
         if ($AceType -eq "Audit") {
-            if (-not ($_.AuditFlags | TestBandOrEquals $AuditFlags -Specific:$Specific)) { return }
+            if (-not ($_.AuditFlags | TestBandOrEquals $AuditFlags -Specific:$Specific)) { 
+                Write-Verbose ("    AuditFlags don't match (Currently [{0}]; Should be [{1}])" -f $_.AuditFlags, $AuditFlags)
+                return 
+            }
         }
         else {
-            if ($_.AccessControlType -ne $AceType) { return }
+            if ($_.AccessControlType -ne $AceType) { 
+                Write-Verbose ("    AccessControlType doesn't match (Currently [{0}]; Should be [{1}])" -f $_.AccessControlType, $AceType)
+                return 
+            }
         }
 
         # If it made it here, output the ACE
+        Write-Verbose "    Found matching ACE"
         $_
     }
 }
@@ -245,21 +270,17 @@ class cFileAce {
 	}
 	
 	[bool] Test() {
-		return [bool] ($this.Get().Where({ $_.Ensure -eq $this.Ensure }))
+        Write-Verbose ("Test(): Ensure = {0}" -f $this.Ensure)
+        
+        $GetAcesParams = $this.GetGetAcesParams()
+        $TestResult = (GetAces @GetAcesParams).Count -eq 1
+        Write-Verbose "  Test result = $TestResult"
+        return $TestResult
 	}
 
 	[cFileAce] Get() {
 		
-        $GetAcesParams = @{
-            Path = $this.Path
-            Principal = $this.Principal
-            AceType = $this.AceType
-            AccessMask = $this.FileSystemRights.value__
-            AppliesTo = $this.AppliesTo
-            AuditFlags = $this.AuditFlags
-            Specific = $this.Specific
-            IgnoreInheritedAces = $this.IgnoreInheritedAces
-        }
+        $GetAcesParams = $this.GetGetAcesParams()
         $MatchingAce = GetAces @GetAcesParams
 
         if ($MatchingAce -eq $null) {
@@ -267,8 +288,8 @@ class cFileAce {
         }
         elseif ($MatchingAce.Count -eq 1) {
             $this.Ensure = [Ensure]::Present
-            $this.AccessMask = $MatchingAce.AccessMask
-            $this.AppliesTo = $MatchingAce.AppliesTo
+            $this.FileSystemRights = $MatchingAce.FileSystemRights
+            $this.AppliesTo = $MatchingAce | ConvertAceFlagsToAppliesTo -Verbose:$false
             if ($this.AceType -eq "Audit") {
                 $this.AuditFlags = $MatchingAce.AuditFlags
             }
@@ -280,5 +301,19 @@ class cFileAce {
 
         return $this
 	}
+
+    [hashtable] GetGetAcesParams() {
+        return @{
+            Path = $this.Path
+            Principal = $this.Principal
+            AceType = $this.AceType
+            AccessMask = $this.FileSystemRights.value__
+            AppliesTo = $this.AppliesTo
+            AuditFlags = $this.AuditFlags
+            Specific = $this.Specific
+            IgnoreInheritedAces = $this.IgnoreInheritedAces
+        }
+
+    }
 
 }
