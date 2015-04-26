@@ -134,7 +134,7 @@ function GetAces {
         [int] $AccessMask,
         [Parameter(Mandatory)]
         [AppliesTo] $AppliesTo,
-        [System.Security.AccessControl.AuditFlags] $AuditFlags,
+        [string] $AuditFlags,
         [switch] $IgnoreInheritedAces,
         [switch] $Specific
     )
@@ -172,41 +172,47 @@ function GetAces {
         [System.Security.Principal.SecurityIdentifier]  # Targettype
     ) | ForEach-Object {
         
+        if ($AceType -eq "Audit") { $CurrentAceType = "Audit" }
+        else { $CurrentAceType = $_.AccessControlType }
+
+        $CurrentAccessMask = $_.GetType().InvokeMember("AccessMask", "GetProperty, NonPublic, Instance", $null, $_, $null)
+        $CurrentAppliesTo = $_ | ConvertAceFlagsToAppliesTo -Verbose:$false
+        Write-Verbose ("    Found ACE: {0} {1} {2} ({3})" -f $CurrentAceType, $_.IdentityReference, $AccessMask, $CurrentAppliesTo)
+
         # Test SID
         if ($_.IdentityReference -ne $SID) { 
-            Write-Verbose ("    IdentityReference doesn't match (Currently [{0}]; Should be [{1}]" -f $_.IdentityReference, $SID)
+            Write-Verbose ("      IdentityReference doesn't match (Currently [{0}]; Should be [{1}]" -f $_.IdentityReference, $SID)
             return 
         }
 
         # Test AppliesTo
-        if (-not ($_ | ConvertAceFlagsToAppliesTo | TestBandOrEquals $AppliesTo -Specific:$Specific)) { 
-            Write-Verbose ("    AppliesTo doesn't match (Currently [{0}]; Should be [{0}]" -f ($_ | ConvertAceFlagsToAppliesTo), $AppliesTo)
+        if (-not ($CurrentAppliesTo | TestBandOrEquals $AppliesTo -Specific:$Specific)) { 
+            Write-Verbose ("      AppliesTo doesn't match (Currently [{0}]; Should be [{0}]" -f $CurrentAppliesTo, $AppliesTo)
             return 
         }
 
         # Test AccessMask
-        $CurrentAccessMask = $_.GetType().InvokeMember("AccessMask", "GetProperty, NonPublic, Instance", $null, $_, $null)
         if (-not ($CurrentAccessMask | TestBandOrEquals $AccessMask -Specific:$Specific)) { 
-            Write-Verbose "    AccessMask doesn't match (Currently [$CurrentAccessMask]; Should be [$AccessMask])"
+            Write-Verbose "      AccessMask doesn't match (Currently [$CurrentAccessMask]; Should be [$AccessMask])"
             return 
         }
 
         # Test AccessControlType/AuditFlags
         if ($AceType -eq "Audit") {
-            if (-not ($_.AuditFlags | TestBandOrEquals $AuditFlags -Specific:$Specific)) { 
-                Write-Verbose ("    AuditFlags don't match (Currently [{0}]; Should be [{1}])" -f $_.AuditFlags, $AuditFlags)
+            if (-not ($_.AuditFlags | TestBandOrEquals ($AuditFlags -as [System.Security.AccessControl.AuditFlags]) -Specific:$Specific)) { 
+                Write-Verbose ("      AuditFlags don't match (Currently [{0}]; Should be [{1}])" -f $_.AuditFlags, $AuditFlags)
                 return 
             }
         }
         else {
             if ($_.AccessControlType -ne $AceType) { 
-                Write-Verbose ("    AccessControlType doesn't match (Currently [{0}]; Should be [{1}])" -f $_.AccessControlType, $AceType)
+                Write-Verbose ("      AccessControlType doesn't match (Currently [{0}]; Should be [{1}])" -f $_.AccessControlType, $AceType)
                 return 
             }
         }
 
         # If it made it here, output the ACE
-        Write-Verbose "    Found matching ACE"
+        Write-Verbose "      ACE passed all tests"
         $_
     }
 }
@@ -251,13 +257,13 @@ class cFileAce {
 	[string] $Principal
 
 	[DscProperty()]
-	[System.Security.AccessControl.FileSystemRights] $FileSystemRights
+	[string] $FileSystemRights
 
 	[DscProperty(Key)]
 	[string] $AppliesTo
 
 	[DscProperty()]
-	[System.Security.AccessControl.AuditFlags] $AuditFlags
+	[string] $AuditFlags
 
 	[DscProperty()]
 	[bool] $Specific
@@ -267,6 +273,65 @@ class cFileAce {
 
 	[void] Set() {
 		Write-Verbose "Inside Set()"
+
+        $GetAclParams = @{
+            Path = $this.Path
+            ErrorAction = "Stop"
+        }
+
+        # First, generate ACE:
+        # Access and Audit ACEs share the first 4 arguments:
+        $AceFlags = $this.AppliesTo | ConvertAppliesToToAceFlags
+        $Arguments = @(
+            $this.Principal,
+            $this.FileSystemRights,
+            $AceFlags.InheritanceFlags,
+            $AceFlags.PropagationFlags
+        )
+
+        # Add the last argument:
+        if ($this.AceType -eq "Audit") {
+            $GetAclParams.Audit = $true
+            $Arguments += $this.AuditFlags
+            $AclType = "Audit"
+        }
+        else {
+            $Arguments += $this.AceType
+            $AclType = "Access"
+        }
+
+        $RuleType = "System.Security.AccessControl.FileSystem${AclType}Rule"
+        Write-Verbose ("Creating instance of {0} ({1})" -f $RuleType, ($Arguments -join ", "))
+        $Rule = New-Object $RuleType $Arguments
+
+        Write-Verbose ("Calling Get-Acl on '{0}'" -f $this.Path)
+        $Acl = Get-Acl @GetAclParams
+        if ($this.Specific) {
+            if ($this.Ensure -eq "Present") {
+                # Add ACE (specific)
+                $ModificationMethod = "Set${AclType}Rule"
+            }
+            else {
+                # Remove ACE (specific)
+                $ModificationMethod = "Remove${AclType}RuleSpecific"
+            }
+        }
+        else {
+            if ($this.Ensure -eq "Present") {
+                # Add ACE (not specific)
+                $ModificationMethod = "Add${AclType}Rule"
+            }
+            else {
+                # Remove ACE (not specific)
+                $ModificationMethod = "Remove${AclType}Rule"
+            }
+        }
+
+        Write-Verbose "Calling '$ModificationMethod'"
+        $Acl.$ModificationMethod.Invoke($Rule)
+
+        # Set-Acl is bad for the file system provider
+        (Get-Item $this.Path).SetAccessControl($Acl)
 	}
 	
 	[bool] Test() {
@@ -274,6 +339,8 @@ class cFileAce {
         
         $GetAcesParams = $this.GetGetAcesParams()
         $TestResult = (GetAces @GetAcesParams).Count -eq 1
+
+        if ($this.Ensure = "Absent") { $TestResult = -not $TestResult }
         Write-Verbose "  Test result = $TestResult"
         return $TestResult
 	}
@@ -307,7 +374,7 @@ class cFileAce {
             Path = $this.Path
             Principal = $this.Principal
             AceType = $this.AceType
-            AccessMask = $this.FileSystemRights.value__
+            AccessMask = $this.FileSystemRights -as [System.Security.AccessControl.FileSystemRights]
             AppliesTo = $this.AppliesTo
             AuditFlags = $this.AuditFlags
             Specific = $this.Specific
