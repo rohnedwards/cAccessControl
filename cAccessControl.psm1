@@ -392,3 +392,153 @@ class cFileAce {
     }
 
 }
+
+[DscResource()]
+class cRegistryAce {
+
+	[DscProperty(Key)]
+	[string] $Path
+
+	[DscProperty()]
+	[Ensure] $Ensure = "Present"
+
+	[DscProperty(Key)]
+	[AceType] $AceType
+
+	[DscProperty(Key)]
+	[string] $Principal
+
+	[DscProperty()]
+	[string] $RegistryRights
+
+	[DscProperty(Key)]
+	[string] $AppliesTo
+
+	[DscProperty()]
+	[string] $AuditFlags
+
+	[DscProperty()]
+	[bool] $Specific
+
+	[DscProperty()]
+	[bool] $IgnoreInheritedAces
+
+	[void] Set() {
+		Write-Verbose "Inside Set()"
+
+        $GetAclParams = @{
+            Path = $this.Path
+            ErrorAction = "Stop"
+        }
+
+        # First, generate ACE:
+        # Access and Audit ACEs share the first 4 arguments:
+        $AceFlags = $this.AppliesTo | ConvertAppliesToToAceFlags
+        $Arguments = @(
+            $this.Principal,
+            $this.RegistryRights,
+            $AceFlags.InheritanceFlags,
+            $AceFlags.PropagationFlags
+        )
+
+        # Add the last argument:
+        if ($this.AceType -eq "Audit") {
+            $GetAclParams.Audit = $true
+            $Arguments += $this.AuditFlags
+            $AclType = "Audit"
+        }
+        else {
+            $Arguments += $this.AceType
+            $AclType = "Access"
+        }
+
+        $RuleType = "System.Security.AccessControl.Registry${AclType}Rule"
+        Write-Verbose ("Creating instance of {0} ({1})" -f $RuleType, ($Arguments -join ", "))
+        $Rule = New-Object $RuleType $Arguments
+
+        Write-Verbose ("Calling Get-Acl on '{0}'" -f $this.Path)
+        $Acl = Get-Acl @GetAclParams
+        if ($this.Specific) {
+            if ($this.Ensure -eq "Present") {
+                # Add ACE (specific)
+                $ModificationMethod = "Set${AclType}Rule"
+            }
+            else {
+                # Remove ACE (specific)
+                $ModificationMethod = "Remove${AclType}RuleSpecific"
+            }
+        }
+        else {
+            if ($this.Ensure -eq "Present") {
+                # Add ACE (not specific)
+                $ModificationMethod = "Add${AclType}Rule"
+            }
+            else {
+                # Remove ACE (not specific)
+                $ModificationMethod = "Remove${AclType}Rule"
+            }
+        }
+
+        Write-Verbose "Calling '$ModificationMethod'"
+        $Acl.$ModificationMethod.Invoke($Rule)
+
+        # Set-Acl is bad for the file system provider
+        (Get-Item $this.Path).SetAccessControl($Acl)
+	}
+	
+	[bool] Test() {
+        Write-Verbose ("Test(): Ensure = {0}" -f $this.Ensure)
+        
+        $GetAcesParams = $this.GetGetAcesParams()
+        $MatchingAces = GetAces @GetAcesParams
+        
+        Write-Verbose ("        Matching ACE count = {0}" -f $MatchingAces.Count)
+        $TestResult = [bool] $MatchingAces.Count
+
+        if ($this.Ensure -eq [Ensure]::Absent) { 
+            Write-Verbose "        Ensure = Absent; negating current TestResult ($TestResult)"
+            $TestResult = -not $TestResult 
+        }
+        Write-Verbose "        Final TestResult = $TestResult"
+        return $TestResult
+	}
+
+	[cRegistryAce] Get() {
+		
+        $GetAcesParams = $this.GetGetAcesParams()
+        $MatchingAce = GetAces @GetAcesParams
+
+        if ($MatchingAce -eq $null) {
+            $this.Ensure = [Ensure]::Absent
+        }
+        elseif ($MatchingAce.Count -eq 1) {
+            $this.Ensure = [Ensure]::Present
+            $this.RegistryRights = $MatchingAce.RegistryRights
+            $this.AppliesTo = $MatchingAce | ConvertAceFlagsToAppliesTo -Verbose:$false
+            if ($this.AceType -eq "Audit") {
+                $this.AuditFlags = $MatchingAce.AuditFlags
+            }
+        }
+        else {
+            # How is this handled?
+            Write-Error "More than one matchine ACE found!"
+        }
+
+        return $this
+	}
+
+    [hashtable] GetGetAcesParams() {
+        return @{
+            Path = $this.Path
+            Principal = $this.Principal
+            AceType = $this.AceType
+            AccessMask = $this.RegistryRights -as [System.Security.AccessControl.RegistryRights]
+            AppliesTo = $this.AppliesTo
+            AuditFlags = $this.AuditFlags
+            Specific = $this.Specific
+            IgnoreInheritedAces = $this.IgnoreInheritedAces
+        }
+
+    }
+
+}
