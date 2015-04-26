@@ -16,7 +16,7 @@
         DependsOn = "[Registry]DscTestKey"
     }
 
-    cRegistryAce DscTestKeyAccessAce2 { # This should be inherited
+    cRegistryAce DscTestKeyAccessAce2 {
         Path = $RegistryPath
         Ensure = "Absent"
         AceType = "Allow"

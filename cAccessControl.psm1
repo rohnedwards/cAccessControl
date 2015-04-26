@@ -482,8 +482,7 @@ class cRegistryAce {
         Write-Verbose "Calling '$ModificationMethod'"
         $Acl.$ModificationMethod.Invoke($Rule)
 
-        # Set-Acl is bad for the file system provider
-        (Get-Item $this.Path).SetAccessControl($Acl)
+        $Acl | Set-Acl
 	}
 	
 	[bool] Test() {
