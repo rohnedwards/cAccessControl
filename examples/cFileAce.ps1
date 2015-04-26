@@ -7,6 +7,33 @@ configuration TestFileAceResource {
         Type = "Directory"
     }
 
+    $FilePath = "c:\ps_dsc_test\file.txt"
+    File DscTestFile {
+        DestinationPath = $FilePath
+        Type = "File"
+        Contents = "A file"
+    }
+
+    cFileAce DscTestFileAccessAce1 {
+        Path = $FilePath
+        Ensure = "Present"
+        AceType = "Deny"
+        Principal = "SYSTEM"
+        FileSystemRights = "Delete"
+        AppliesTo = "Object"
+        DependsOn = "[File]DscTestFile"
+    }
+
+    cFileAce DscTestFileAccessAce2 { # This should be inherited
+        Path = $FilePath
+        Ensure = "Present"
+        AceType = "Allow"
+        Principal = "Administrators"
+        FileSystemRights = "FullControl"
+        AppliesTo = "Object"
+        DependsOn = "[File]DscTestFile"
+    }
+
     cFileAce DscTestFolderAccessAce1 {
         Path = $FolderPath
         Ensure = "Absent"
