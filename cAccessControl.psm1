@@ -166,54 +166,56 @@ function GetAces {
     }
 
     $AceFlags = $AppliesTo | ConvertAppliesToToAceFlags
-    $SD.$GetAceMethodName.Invoke(
+
+    foreach($CurrentAce in $SD.$GetAceMethodName.Invoke(
         $true,  # Include explicit?
         -not $IgnoreInheritedAces, # Include inherited?
         [System.Security.Principal.SecurityIdentifier]  # Targettype
-    ) | ForEach-Object {
+    )) {
         
         if ($AceType -eq "Audit") { $CurrentAceType = "Audit" }
-        else { $CurrentAceType = $_.AccessControlType }
+        else { $CurrentAceType = $CurrentAce.AccessControlType }
 
-        $CurrentAccessMask = $_.GetType().InvokeMember("AccessMask", "GetProperty, NonPublic, Instance", $null, $_, $null)
-        $CurrentAppliesTo = $_ | ConvertAceFlagsToAppliesTo -Verbose:$false
-        Write-Verbose ("    Found ACE: {0} {1} {2} ({3})" -f $CurrentAceType, $_.IdentityReference, $AccessMask, $CurrentAppliesTo)
+        $CurrentAccessMask = $CurrentAce.GetType().InvokeMember("AccessMask", "GetProperty, NonPublic, Instance", $null, $CurrentAce, $null)
+        $CurrentAppliesTo = $CurrentAce | ConvertAceFlagsToAppliesTo -Verbose:$false
+        Write-Verbose ("    Found ACE: {0} {1} {2} ({3})" -f $CurrentAceType, $CurrentAce.IdentityReference, $AccessMask, $CurrentAppliesTo)
 
         # Test SID
-        if ($_.IdentityReference -ne $SID) { 
-            Write-Verbose ("      IdentityReference doesn't match (Currently [{0}]; Should be [{1}]" -f $_.IdentityReference, $SID)
-            return 
+        if ($CurrentAce.IdentityReference -ne $SID) { 
+            Write-Verbose ("      IdentityReference doesn't match (Currently [{0}]; Should be [{1}]" -f $CurrentAce.IdentityReference, $SID)
+            continue
         }
 
         # Test AppliesTo
         if (-not ($CurrentAppliesTo | TestBandOrEquals $AppliesTo -Specific:$Specific)) { 
             Write-Verbose ("      AppliesTo doesn't match (Currently [{0}]; Should be [{0}]" -f $CurrentAppliesTo, $AppliesTo)
-            return 
+            continue 
         }
 
         # Test AccessMask
         if (-not ($CurrentAccessMask | TestBandOrEquals $AccessMask -Specific:$Specific)) { 
             Write-Verbose "      AccessMask doesn't match (Currently [$CurrentAccessMask]; Should be [$AccessMask])"
-            return 
+            continue 
         }
 
         # Test AccessControlType/AuditFlags
         if ($AceType -eq "Audit") {
-            if (-not ($_.AuditFlags | TestBandOrEquals ($AuditFlags -as [System.Security.AccessControl.AuditFlags]) -Specific:$Specific)) { 
-                Write-Verbose ("      AuditFlags don't match (Currently [{0}]; Should be [{1}])" -f $_.AuditFlags, $AuditFlags)
-                return 
+            if (-not ($CurrentAce.AuditFlags | TestBandOrEquals ($AuditFlags -as [System.Security.AccessControl.AuditFlags]) -Specific:$Specific)) { 
+                Write-Verbose ("      AuditFlags don't match (Currently [{0}]; Should be [{1}])" -f $CurrentAce.AuditFlags, $AuditFlags)
+                continue 
             }
         }
         else {
-            if ($_.AccessControlType -ne $AceType) { 
-                Write-Verbose ("      AccessControlType doesn't match (Currently [{0}]; Should be [{1}])" -f $_.AccessControlType, $AceType)
-                return 
+            if ($CurrentAce.AccessControlType -ne $AceType) { 
+                Write-Verbose ("      AccessControlType doesn't match (Currently [{0}]; Should be [{1}])" -f $CurrentAce.AccessControlType, $AceType)
+                continue 
             }
         }
 
         # If it made it here, output the ACE
         Write-Verbose "      ACE passed all tests"
-        $_
+        $CurrentAce
+        break
     }
 }
 
@@ -338,10 +340,16 @@ class cFileAce {
         Write-Verbose ("Test(): Ensure = {0}" -f $this.Ensure)
         
         $GetAcesParams = $this.GetGetAcesParams()
-        $TestResult = (GetAces @GetAcesParams).Count -eq 1
+        $MatchingAces = GetAces @GetAcesParams
+        
+        Write-Verbose ("        Matching ACE count = {0}" -f $MatchingAces.Count)
+        $TestResult = [bool] $MatchingAces.Count
 
-        if ($this.Ensure = "Absent") { $TestResult = -not $TestResult }
-        Write-Verbose "  Test result = $TestResult"
+        if ($this.Ensure -eq [Ensure]::Absent) { 
+            Write-Verbose "        Ensure = Absent; negating current TestResult ($TestResult)"
+            $TestResult = -not $TestResult 
+        }
+        Write-Verbose "        Final TestResult = $TestResult"
         return $TestResult
 	}
 
