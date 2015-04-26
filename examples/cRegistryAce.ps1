@@ -13,7 +13,7 @@
         Principal = "SYSTEM"
         RegistryRights = "Delete"
         AppliesTo = "Object, ChildContainers"
-        DependsOn = "[File]DscTestKey"
+        DependsOn = "[Registry]DscTestKey"
     }
 
     cRegistryAce DscTestKeyAccessAce2 { # This should be inherited
@@ -23,7 +23,7 @@
         Principal = "Everyone"
         RegistryRights = "CreateKey"
         AppliesTo = "Object"
-        DependsOn = "[File]DscTestKey"
+        DependsOn = "[Registry]DscTestKey"
     }
 
     cRegistryAce DscTestKeyAuditAce1 {
@@ -33,6 +33,6 @@
         RegistryRights = "FullControl"
         AuditFlags = "Failure"
         AppliesTo = "Object, ChildContainers"
-        DependsOn = "[File]DscTestFolder"
+        DependsOn = "[Registry]DscTestKey"
     }
 }
